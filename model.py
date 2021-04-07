@@ -294,32 +294,34 @@ class SSD(nn.Module):
 
                 # A torch.uint8 (byte) tensor to keep track of which predicted boxes to suppress
                 # 1 implies suppress, 0 implies don't suppress
-                suppress = torch.max(suppress, (overlap[box] > max_overlap).type(torch.cuda.ByteTensor))  # (n_qualified)
+                # suppress = torch.max(suppress, (overlap[box] > max_overlap).type(torch.cuda.ByteTensor))  # (n_qualified)
 
                 # Consider each box in order of decreasing scores
+                suppress = np.zeros((class_decoded_locs.size(0), ))
                 for box in range(class_decoded_locs.size(0)):
                     # If this box is already marked for suppression
-                    if suppress[box] == 1:
-                        continue
+                    # if suppress[box] == 1:
+                    #     continue
 
                     # Suppress boxes whose overlaps (with this box) are greater than maximum overlap
                     # Find such boxes and update suppress indices
-                    suppress = torch.max(suppress, overlap[box] > max_overlap)
+                    overlap[box][box] = 0
+                    suppress[box] = torch.max(overlap[box] > max_overlap).cpu()
                     # The max operation retains previously suppressed boxes, like an 'OR' operation
 
                     # Don't suppress this box, even though it has an overlap of 1 with itself
-                    suppress[box] = 0
+                    # suppress[box] = 0
 
                 # Store only unsuppressed boxes for this class
-                image_boxes.append(class_decoded_locs[1 - suppress])
-                image_labels.append(torch.LongTensor((1 - suppress).sum().item() * [c]).to(device))
+                image_boxes.append(class_decoded_locs[suppress])
+                image_labels.append(torch.LongTensor(int((1 - suppress).sum().item()) * [c]).to(self.device))
                 image_scores.append(class_scores[1 - suppress])
 
             # If no object in any class is found, store a placeholder for 'background'
             if len(image_boxes) == 0:
-                image_boxes.append(torch.FloatTensor([[0., 0., 1., 1.]]).to(device))
-                image_labels.append(torch.LongTensor([0]).to(device))
-                image_scores.append(torch.FloatTensor([0.]).to(device))
+                image_boxes.append(torch.FloatTensor([[0., 0., 1., 1.]]).to(self.device))
+                image_labels.append(torch.LongTensor([0]).to(self.device))
+                image_scores.append(torch.FloatTensor([0.]).to(self.device))
 
             # Concatenate into single tensors
             image_boxes = torch.cat(image_boxes, dim=0)  # (n_objects, 4)
