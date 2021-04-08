@@ -2,6 +2,12 @@ import numba
 import torch
 import numpy as np
 from torch import nn
+from math import sqrt
+import torchvision
+import torch.nn.functional as F
+from scipy import stats
+
+from utils import *
 
 @numba.jit(nopython=True)
 def make_input_tensor(input_tensor, new_aug_lidar_cam_coords, bin_idxs, pillar_idxs):
@@ -115,7 +121,7 @@ class PFNv2(nn.Module):
         encoded_bev[:, pillar_idxs[:,0], pillar_idxs[:,1]] = encoded_pillars[:, :num_nonempty_pillars]
         return encoded_bev 
     
-    class PredictionConvolutions(nn.Module):
+class PredictionConvolutions(nn.Module):
     def __init__(self, channels_for_block, n_classes):
         super(PredictionConvolutions, self).__init__()
 
@@ -181,6 +187,7 @@ class SSD(nn.Module):
     def __init__(self, resnet_type, n_classes):
         super(SSD, self).__init__()
         assert resnet_type in [18, 34, 50]
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
         if resnet_type == 18:
             resnet = list(torchvision.models.resnet18().children())
@@ -231,7 +238,6 @@ class SSD(nn.Module):
         aspect_ratios = [2., 0.5]
         fmap_names = list(fmap_dims.keys())
         prior_boxes = []
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
         for fmap in fmap_names:
             for i in range(fmap_dims[fmap]):
@@ -242,7 +248,7 @@ class SSD(nn.Module):
                     for ratio in aspect_ratios:
                         prior_boxes.append([cx, cy, obj_scale * sqrt(ratio), obj_scale / sqrt(ratio)])
 
-        prior_boxes = torch.FloatTensor(prior_boxes).to(device)
+        prior_boxes = torch.FloatTensor(prior_boxes).to(self.device)
         prior_boxes.clamp_(0, 1)
 
         return prior_boxes
@@ -294,32 +300,34 @@ class SSD(nn.Module):
 
                 # A torch.uint8 (byte) tensor to keep track of which predicted boxes to suppress
                 # 1 implies suppress, 0 implies don't suppress
-                suppress = torch.max(suppress, (overlap[box] > max_overlap).type(torch.cuda.ByteTensor))  # (n_qualified)
+                # suppress = torch.max(suppress, (overlap[box] > max_overlap).type(torch.cuda.ByteTensor))  # (n_qualified)
 
                 # Consider each box in order of decreasing scores
+                suppress = np.zeros((class_decoded_locs.size(0), ))
                 for box in range(class_decoded_locs.size(0)):
                     # If this box is already marked for suppression
-                    if suppress[box] == 1:
-                        continue
+                    # if suppress[box] == 1:
+                    #     continue
 
                     # Suppress boxes whose overlaps (with this box) are greater than maximum overlap
                     # Find such boxes and update suppress indices
-                    suppress = torch.max(suppress, overlap[box] > max_overlap)
+                    overlap[box][box] = 0
+                    suppress[box] = torch.max(overlap[box] > max_overlap).cpu()
                     # The max operation retains previously suppressed boxes, like an 'OR' operation
 
                     # Don't suppress this box, even though it has an overlap of 1 with itself
-                    suppress[box] = 0
+                    # suppress[box] = 0
 
                 # Store only unsuppressed boxes for this class
-                image_boxes.append(class_decoded_locs[1 - suppress])
-                image_labels.append(torch.LongTensor((1 - suppress).sum().item() * [c]).to(device))
+                image_boxes.append(class_decoded_locs[suppress])
+                image_labels.append(torch.LongTensor(int((1 - suppress).sum().item()) * [c]).to(self.device))
                 image_scores.append(class_scores[1 - suppress])
 
             # If no object in any class is found, store a placeholder for 'background'
             if len(image_boxes) == 0:
-                image_boxes.append(torch.FloatTensor([[0., 0., 1., 1.]]).to(device))
-                image_labels.append(torch.LongTensor([0]).to(device))
-                image_scores.append(torch.FloatTensor([0.]).to(device))
+                image_boxes.append(torch.FloatTensor([[0., 0., 1., 1.]]).to(self.device))
+                image_labels.append(torch.LongTensor([0]).to(self.device))
+                image_scores.append(torch.FloatTensor([0.]).to(self.device))
 
             # Concatenate into single tensors
             image_boxes = torch.cat(image_boxes, dim=0)  # (n_objects, 4)
@@ -352,6 +360,7 @@ class MultiBoxLoss(nn.Module):
 
     def __init__(self, priors_cxcy, threshold=0.5, neg_pos_ratio=3, alpha=1.):
         super(MultiBoxLoss, self).__init__()
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.priors_cxcy = priors_cxcy
         self.priors_xy = cxcy_to_xy(priors_cxcy)
         self.threshold = threshold
@@ -376,8 +385,8 @@ class MultiBoxLoss(nn.Module):
 
         assert n_priors == predicted_locs.size(1) == predicted_scores.size(1)
 
-        true_locs = torch.zeros((batch_size, n_priors, 4), dtype=torch.float).to(device) 
-        true_classes = torch.zeros((batch_size, n_priors), dtype=torch.long).to(device)  
+        true_locs = torch.zeros((batch_size, n_priors, 4), dtype=torch.float).to(self.device) 
+        true_classes = torch.zeros((batch_size, n_priors), dtype=torch.long).to(self.device)  
 
         # For each image
         for i in range(batch_size):
@@ -392,7 +401,7 @@ class MultiBoxLoss(nn.Module):
             _, prior_for_each_object = overlap.max(dim=1)  # (N_o)
 
             # Then, assign each object to the corresponding maximum-overlap-prior. (This fixes 1.)
-            object_for_each_prior[prior_for_each_object] = torch.LongTensor(range(n_objects)).to(device)
+            object_for_each_prior[prior_for_each_object] = torch.LongTensor(range(n_objects)).to(self.device)
 
             # To ensure these priors qualify, artificially give them an overlap of greater than 0.5. (This fixes 2.)
             overlap_for_each_prior[prior_for_each_object] = 1.
@@ -430,7 +439,7 @@ class MultiBoxLoss(nn.Module):
         conf_loss_neg = conf_loss_all.clone()  # (N, n_priors)
         conf_loss_neg[positive_priors] = 0.  # (N, n_priors), positive priors are ignored (never in top n_hard_negatives)
         conf_loss_neg, _ = conf_loss_neg.sort(dim=1, descending=True)  # (N, n_priors), sorted by decreasing hardness
-        hardness_ranks = torch.LongTensor(range(n_priors)).unsqueeze(0).expand_as(conf_loss_neg).to(device)  # (N, n_priors)
+        hardness_ranks = torch.LongTensor(range(n_priors)).unsqueeze(0).expand_as(conf_loss_neg).to(self.device)  # (N, n_priors)
         hard_negatives = hardness_ranks < n_hard_negatives.unsqueeze(1)  # (N, n_priors)
         conf_loss_hard_neg = conf_loss_neg[hard_negatives]  # (sum(n_hard_negatives))
 

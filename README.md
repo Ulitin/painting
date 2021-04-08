@@ -14,6 +14,10 @@ pip install -r requirements.txt
 Download and unzip the [KITTI Dataset](http://www.cvlibs.net/datasets/kitti/eval_object.php?obj_benchmark=bev) (images, lidar, labels, calib)
 Also download and save [weights](https://drive.google.com/file/d/1nqSDmTx97Y23j7L3Wca5hPudxXp57A7J/view?usp=sharing) for the semantic segmentation network
 
+## Pretrained model
+
+[pointpillars.pth](https://drive.google.com/file/d/1qNqoaSOJQro7GUpQSz91s_VzAh9-tMBa/view?usp=sharing)
+
 Train and evaluate the network:
 ```
 python train.py

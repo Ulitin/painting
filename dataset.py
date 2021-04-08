@@ -2,8 +2,11 @@ import torch
 import PIL
 import os
 import copy
+import math
 import numpy as np
+import pickle
 from torch import nn
+import torchvision
 from torchvision import transforms
 
 class KittiDataset(torch.utils.data.Dataset):
@@ -15,11 +18,11 @@ class KittiDataset(torch.utils.data.Dataset):
             raise ValueError('mode must be "training" or "testing".')
         if valid == True and self.mode != 'training':
             raise ValueError('mode must be set to "training" if valid is set to True.')
-        with open('file_nums_with_cars.pkl', 'rb') as f:
+        with open('file_nums.pkl', 'rb') as f:
             self.file_nums_with_cars = pickle.load(f)
 
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        deeplab101 = torch.models.segmentation.deeplabv3_resnet101(pretrained=True)
+        deeplab101 = torchvision.models.segmentation.deeplabv3_resnet101(pretrained=True)
         #Change out channels to 5 since that is num_categories for my KITTI-modified Cityscapes data
         deeplab101.classifier[4] = nn.Conv2d(256, 5, kernel_size=(1, 1), stride=(1, 1))
         deeplab101.aux_classifier[4] = nn.Conv2d(256, 5, kernel_size=(1, 1), stride=(1, 1))
@@ -214,3 +217,16 @@ class KittiDataset(torch.utils.data.Dataset):
             classes.append(b[2])
 
         return lidar, boxes, classes
+
+    def collate_fn_eval(self, batch):
+        """
+        :param batch: an iterable of N sets from __getitem__()
+        :return: a tensor of lidar, lists of varying-size tensors of bounding boxes, labels
+        """
+
+        lidar = list()
+
+        for b in batch:
+            lidar.append(b)
+
+        return [lidar]
