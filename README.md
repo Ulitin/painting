@@ -7,7 +7,7 @@ Above shows predicted (green) bounding boxes for an image and BEV map as well as
 ## Installation and Training steps
 Clone the repo:
 ```
-git clone https://github.com/rshilliday/painting.git
+git clone https://github.com/Ulitin/painting.git
 cd painting
 pip install -r requirements.txt
 ```
