@@ -201,6 +201,19 @@ class KittiDataset(torch.utils.data.Dataset):
         boxes /= bev_rows # convert from bev pixel coords to bev fractional coords (0 to 1)
         return boxes, classes
 
+    def collate_fn_eval(self, batch):
+        """
+        :param batch: an iterable of N sets from __getitem__()
+        :return: a tensor of lidar, lists of varying-size tensors of bounding boxes, labels
+        """
+
+        lidar = list()
+
+        for b in batch:
+            lidar.append(b)
+
+        return [lidar]
+
     def collate_fn(self, batch):
         """
         :param batch: an iterable of N sets from __getitem__()
