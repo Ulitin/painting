@@ -14,6 +14,7 @@ class KittiDataset(torch.utils.data.Dataset):
         self.root = root
         self.transforms = transforms
         self.mode = mode # 'training' or 'testing'
+        self.projection_mats = {}
         if self.mode != 'training' and self.mode != 'testing':
             raise ValueError('mode must be "training" or "testing".')
         if valid == True and self.mode != 'training':
@@ -28,6 +29,7 @@ class KittiDataset(torch.utils.data.Dataset):
         deeplab101.aux_classifier[4] = nn.Conv2d(256, 5, kernel_size=(1, 1), stride=(1, 1))
         for p in deeplab101.backbone.parameters():
             p.requires_grad = False
+        # deeplab101.load_state_dict(torch.load('/home/aulitin/Downloads/deeplab_20epochs.pth', map_location='cpu'))
         deeplab101.load_state_dict(torch.load('./deeplab_20epochs.pth'))
         deeplab101 = deeplab101.to(self.device)
         deeplab101.eval()
@@ -60,6 +62,7 @@ class KittiDataset(torch.utils.data.Dataset):
         lidar_path = os.path.join(self.root, self.mode, "velodyne", self.lidar[idx])
         calib_path = os.path.join(self.root, self.mode, "calib", self.calib[idx])
 
+        self.projection_mats = {}
         with open(calib_path) as f:
             lines = f.readlines()
             for l in lines:
@@ -71,14 +74,14 @@ class KittiDataset(torch.utils.data.Dataset):
             P2 = np.array(lines[2].split(":")[-1].split(), dtype=np.float32).reshape((3,4))
             R0_rect[:3, :3] = np.array(lines[4].split(":")[-1].split(), dtype=np.float32).reshape((3,3)) # makes 4x4 matrix
             Tr_velo_to_cam[:3, :4] = np.array(lines[5].split(":")[-1].split(), dtype=np.float32).reshape((3,4)) # makes 4x4 matrix
-            projection_mats = {'P2': P2, 'R0_rect': R0_rect, 'Tr_velo_to_cam':Tr_velo_to_cam}
+            self.projection_mats = {'P2': P2, 'R0_rect': R0_rect, 'Tr_velo_to_cam':Tr_velo_to_cam}
 
         img = PIL.Image.open(img_path).convert("RGB")
         pointcloud = np.fromfile(lidar_path, dtype=np.float32)
         pointcloud = pointcloud.reshape(-1,4)
-        lidar_cam_coords = self.cam_to_lidar(pointcloud, projection_mats)
+        lidar_cam_coords = self.cam_to_lidar(pointcloud, self.projection_mats)
         class_scores = self.create_class_scores_mask(img)
-        augmented_lidar_cam_coords = self.augment_lidar_class_scores(class_scores, lidar_cam_coords, projection_mats)
+        augmented_lidar_cam_coords = self.augment_lidar_class_scores(class_scores, lidar_cam_coords, self.projection_mats)
 
         if self.mode == 'training':
             label_path = os.path.join(self.root, self.mode, "label_2", self.labels[idx])
@@ -130,6 +133,23 @@ class KittiDataset(torch.utils.data.Dataset):
         
         return lidar_cam_coords
 
+    def lidar_to_cam(self, lidar_cam_coords, projection_mats):
+        """
+        Takes in lidar in camera coords, returns lidar points in velo coords
+
+        :param lidar_cam_coords: (n_points, 4) np.array (x,y,z,r) in camera coordinates
+        :return lidar_velo_coords: (n_points, 4) np.array (x,y,z,r) in velodyne coordinates
+        """
+
+        lidar_cam_coords = copy.deepcopy(pointcloud)
+        reflectances = copy.deepcopy(lidar_cam_coords[:, -1]) #copy reflectances column
+        lidar_cam_coords[:, -1] = 1 # for multiplying with homogeneous matrix
+        lidar_velo_coords = (np.linalg.inv(projection_mats['Tr_velo_to_cam'])).dot(lidar_cam_coords.transpose())
+        lidar_velo_coords = lidar_velo_coords.transpose()
+        lidar_velo_coords[:, -1] = reflectances
+        
+        return lidar_velo_coords
+
     def create_class_scores_mask(self, img):
         transform = transforms.Compose([
                 transforms.ToTensor(),
@@ -175,11 +195,6 @@ class KittiDataset(torch.utils.data.Dataset):
         """
         Creates inputs expected by Loss function. boxes is (n_obj, 4) tensor (xmin, ymin, xmax, ymax)
         """
-        z_height = z_range[1] - z_range[0]
-        x_width = x_range[1] - x_range[0]
-        bev_rows = int(z_height/pillar_resolution)
-        bev_cols = int(x_width/pillar_resolution)
-        assert bev_rows == bev_cols #square bev img
         boxes = torch.empty(len(labels), 4)
         classes = torch.ones(len(labels)) # all are cars
 
@@ -190,16 +205,84 @@ class KittiDataset(torch.utils.data.Dataset):
 
             if not (math.pi/4 < abs(rot) < (3*math.pi)/4): #if angle not in that range, car is facing left/right, so width is up/down
                 w, l = l, w #make so width is always left/right on bev img
-            
-            xmin = math.floor((x - w/2 - x_range[0]) / pillar_resolution) #left 'pixel' coord of bbox (bev_img)
-            xmax = math.floor((x + w/2 - x_range[0]) / pillar_resolution)# right
-            ymin = math.floor((z_range[1] - (z + l/2)) / pillar_resolution) #top
-            ymax = math.floor((z_range[1] - (z - l/2)) / pillar_resolution) #bottom
 
-            boxes[i] = torch.tensor([xmin, ymin, xmax, ymax])
+            xmin = x - w/2
+            xmax = x + w/2
+            zmin = z - l/2
+            zmax = z + l/2
+            converted_box = self.convert_to_bev(xmin = xmin, ymax = zmax, xmax = xmax, ymin = zmin)
+            boxes[i] = torch.tensor(converted_box)
 
-        boxes /= bev_rows # convert from bev pixel coords to bev fractional coords (0 to 1)
         return boxes, classes
+
+    # def create_kitti_labels(self, boxes, x_range=(-40, 40), z_range=(0, 80), pillar_resolution=0.16):
+    #     """
+    #     Creates boxes to kitti format
+    #     """
+    #     h = -1
+    #     kitti_labels = list()
+
+    #     for i in range(len(boxes)):
+    #         box = boxes[i]
+
+    #         xmin = x - w/2
+    #         xmax = x + w/2
+    #         zmin = z - length/2
+    #         zmax = z + length/2
+    #         converted_box = convert_to_bev(xmin = xmin, ymax = zmax, xmax = xmax, ymin = zmin, x_range, z_range, pillar_resolution)
+    #         boxes[i] = torch.tensor(converted_box)
+
+    #         if (w > l).all(): w, l, theta = l, w, 0
+    #         kitti_labels = [h, w, l, x, y, z, theta]
+
+    #     return boxes, classes
+
+    def convert_to_bev(self, xmin, ymin, ymax, xmax, x_range=(-40, 40), z_range=(0, 80), pillar_resolution=0.16):
+        z_height = z_range[1] - z_range[0]
+        x_width = x_range[1] - x_range[0]
+        bev_rows = int(z_height/pillar_resolution)
+        bev_cols = int(x_width/pillar_resolution)
+        assert bev_rows == bev_cols #square bev img
+        
+        c_xmin = math.floor((xmin - x_range[0]) / pillar_resolution) #left 'pixel' coord of bbox (bev_img)
+        c_xmax = math.floor((xmax - x_range[0]) / pillar_resolution) #right
+
+        # ось Z переворачивается верх ногами
+        c_ymin = math.floor((z_range[1] - (ymax)) / pillar_resolution) #top
+        c_ymax = math.floor((z_range[1] - (ymin)) / pillar_resolution) #bottom
+
+        # convert from bev pixel coords to bev fractional coords (0 to 1)
+        c_xmin /= bev_rows
+        c_xmax /= bev_rows
+        c_ymin /= bev_rows
+        c_ymax /= bev_rows
+        converted_box = [c_xmin, c_ymin, c_xmax, c_ymax]
+        
+        return converted_box
+
+    # def convert_from_bev(self, xmin, ymin, xmax, ymax, x_range=(-40, 40), z_range=(0, 80), pillar_resolution=0.16):
+    # #     """
+    # #     Creates netural network output in KITTI format. See README devkit4database for more infrom abot KITTI format
+    # #     :param boxes[xmin, ymax, xmax, ymin]: obj in BEV format
+    # #     :return: boxes of KITTI format to camera coord
+    # #     """
+    #     z_height = z_range[1] - z_range[0]
+    #     x_width = x_range[1] - x_range[0]
+    #     bev_rows = int(z_height/pillar_resolution)
+    #     bev_cols = int(x_width/pillar_resolution)
+    #     assert bev_rows == bev_cols #square bev img
+
+    #     converted_box = [xmin, ymin, xmax, ymax]
+    #     converted_box *= bev_rows
+    #     converted_box *= pillar_resolution
+
+    #     converted_box[0] += x_range[0]
+    #     converted_box[2] += x_range[0]
+
+    #     converted_box[1] = z_range[1] - converted_box[1]
+    #     converted_box[3] = z_range[1] - converted_box[3]
+
+    #     return converted_box
 
     def collate_fn_eval(self, batch):
         """
@@ -230,16 +313,3 @@ class KittiDataset(torch.utils.data.Dataset):
             classes.append(b[2])
 
         return lidar, boxes, classes
-
-    def collate_fn_eval(self, batch):
-        """
-        :param batch: an iterable of N sets from __getitem__()
-        :return: a tensor of lidar, lists of varying-size tensors of bounding boxes, labels
-        """
-
-        lidar = list()
-
-        for b in batch:
-            lidar.append(b)
-
-        return [lidar]
