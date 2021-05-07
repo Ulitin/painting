@@ -98,5 +98,7 @@ train_dataset = KittiDataset(root=root, mode="training", valid=False)
 train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=False,
                                           collate_fn=train_dataset.collate_fn, num_workers=workers)
 
+
+
 # evaluate(test_loader, model)
 evaluate(train_loader, train_dataset,  model)

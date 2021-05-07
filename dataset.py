@@ -15,6 +15,7 @@ class KittiDataset(torch.utils.data.Dataset):
         self.transforms = transforms
         self.mode = mode # 'training' or 'testing'
         self.projection_mats = {}
+        self.labels_map = {'Car':1, 'Truck':1, 'Cyclist':0, 'Pedestrian':0, 'Misc':0}
         if self.mode != 'training' and self.mode != 'testing':
             raise ValueError('mode must be "training" or "testing".')
         if valid == True and self.mode != 'training':
@@ -29,8 +30,8 @@ class KittiDataset(torch.utils.data.Dataset):
         deeplab101.aux_classifier[4] = nn.Conv2d(256, 5, kernel_size=(1, 1), stride=(1, 1))
         for p in deeplab101.backbone.parameters():
             p.requires_grad = False
-        # deeplab101.load_state_dict(torch.load('/home/aulitin/Downloads/deeplab_20epochs.pth', map_location='cpu'))
-        deeplab101.load_state_dict(torch.load('./deeplab_20epochs.pth'))
+        deeplab101.load_state_dict(torch.load('/home/aulitin/Downloads/deeplab_20epochs.pth', map_location='cpu'))
+        # deeplab101.load_state_dict(torch.load('./deeplab_20epochs.pth'))
         deeplab101 = deeplab101.to(self.device)
         deeplab101.eval()
         self.deeplab101 = deeplab101
@@ -81,6 +82,7 @@ class KittiDataset(torch.utils.data.Dataset):
         pointcloud = pointcloud.reshape(-1,4)
         lidar_cam_coords = self.cam_to_lidar(pointcloud, self.projection_mats)
         class_scores = self.create_class_scores_mask(img)
+        self.view_class_scores_mask(img)
         augmented_lidar_cam_coords = self.augment_lidar_class_scores(class_scores, lidar_cam_coords, self.projection_mats)
 
         if self.mode == 'training':
@@ -89,22 +91,22 @@ class KittiDataset(torch.utils.data.Dataset):
                 labels = []
                 lines = f.readlines()
                 for l in lines:
-                    if l.startswith('Car'):
-                        bbox_2d = np.array(l.split()[4:8], dtype=np.float32)
-                        dims_3d = np.array(l.split()[8:11], dtype=np.float32)
-                        car_center_3d = np.array(l.split()[11:14], dtype=np.float32)
-                        rotation_y = np.float32(l.split()[14])
+                    label_id = convert_to_label(l.split()[0])
+                    bbox_2d = np.array(l.split()[4:8], dtype=np.float32)
+                    dims_3d = np.array(l.split()[8:11], dtype=np.float32)
+                    car_center_3d = np.array(l.split()[11:14], dtype=np.float32)
+                    rotation_y = np.float32(l.split()[14])
 
-                        # in pixel coords
-                        left, top, right, bottom = bbox_2d[0], bbox_2d[1], bbox_2d[2], bbox_2d[3] 
+                    # in pixel coords
+                    left, top, right, bottom = bbox_2d[0], bbox_2d[1], bbox_2d[2], bbox_2d[3] 
 
-                        # height(x-axis of camera [right/left]), width(y axis of camera [down/up]), length(z axis of camera[forward/back]) of car (meters)
-                        h, w, l = dims_3d[0], dims_3d[1], dims_3d[2]
-                        
-                        # x,y,z in camera coords correspond to -y, -z, x in lidar coords (coords in meters)
-                        x, y, z = car_center_3d[0], car_center_3d[1], car_center_3d[2]
-                        
-                        labels.append({'2d_bbox_img_coords': (left, top, right, bottom),'3d_bbox_dims_cam_coords': (h, w, l), '3d_car_center_cam_coords': (x, y, z), 'rotation_y': (rotation_y)})
+                    # height(x-axis of camera [right/left]), width(y axis of camera [down/up]), length(z axis of camera[forward/back]) of car (meters)
+                    h, w, l = dims_3d[0], dims_3d[1], dims_3d[2]
+                    
+                    # x,y,z in camera coords correspond to -y, -z, x in lidar coords (coords in meters)
+                    x, y, z = car_center_3d[0], car_center_3d[1], car_center_3d[2]
+                    
+                    labels.append({'label': label_id, '2d_bbox_img_coords': (left, top, right, bottom),'3d_bbox_dims_cam_coords': (h, w, l), '3d_car_center_cam_coords': (x, y, z), 'rotation_y': (rotation_y)})
 
             boxes, classes = self.create_boxes_and_labels(labels)
             boxes = boxes.to(self.device)
@@ -164,6 +166,32 @@ class KittiDataset(torch.utils.data.Dataset):
         class_scores = class_scores.squeeze()
         return class_scores
 
+    def view_class_scores_mask(self, img):
+        transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+
+        tensor_img = transform(img)
+        tensor_img = tensor_img.unsqueeze(0).to(self.device)
+        mask = self.deeplab101(tensor_img)
+        mask = mask['out'] #ignore auxillary output
+        # _, preds = torch.max(mask, 1)
+        output_predictions = mask[0].argmax(0)
+        # create a color pallette, selecting a color for each class
+        palette = torch.tensor([2 ** 25 - 1, 2 ** 15 - 1, 2 ** 21 - 1])
+        colors = torch.as_tensor([i for i in range(21)])[:, None] * palette
+        colors = (colors % 255).numpy().astype("uint8")
+
+        # plot the semantic segmentation predictions of 21 classes in each color
+        from PIL import Image
+        r = Image.fromarray(output_predictions.byte().cpu().numpy()).resize(img.size)
+        r.putpalette(colors)
+
+        import matplotlib.pyplot as plt
+        plt.imshow(r)
+        plt.show()
+        jj = 10
+
     def augment_lidar_class_scores(self, class_scores, lidar_cam_coords, projection_mats):
         """
         Projects lidar points onto segmentation map, appends class score each point projects onto.
@@ -212,6 +240,7 @@ class KittiDataset(torch.utils.data.Dataset):
             zmax = z + l/2
             converted_box = self.convert_to_bev(xmin = xmin, ymax = zmax, xmax = xmax, ymin = zmin)
             boxes[i] = torch.tensor(converted_box)
+            classes[i] = torch.tensor(labels[i]['label'])
 
         return boxes, classes
 
@@ -283,7 +312,13 @@ class KittiDataset(torch.utils.data.Dataset):
     #     converted_box[3] = z_range[1] - converted_box[3]
 
     #     return converted_box
-
+    def convert_to_label(self, label_str):
+        """
+        :param label_str: label in string type
+        :return: label in id type
+        """
+        return self.labels_map[label_str]
+        
     def collate_fn_eval(self, batch):
         """
         :param batch: an iterable of N sets from __getitem__()
