@@ -7,7 +7,7 @@ import torchvision
 import torch.nn.functional as F
 from scipy import stats
 
-from utils import *
+from utils.utils import *
 
 @numba.jit(nopython=True)
 def make_input_tensor(input_tensor, new_aug_lidar_cam_coords, bin_idxs, pillar_idxs):
@@ -26,16 +26,16 @@ def make_input_tensor(input_tensor, new_aug_lidar_cam_coords, bin_idxs, pillar_i
     return input_tensor
 
 class PFNv2(nn.Module):
-    def __init__(self):
+    def __init__(self, channel_size = 64):
         super(PFNv2, self).__init__()
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.max_pillars = 12000
         self.max_pts_per_pillar = 100
         self.xrange = (-40, 40)
-        self.zrange = (0, 80)
+        self.yrange = (0, 80)
 
-        self.conv1 = nn.Conv2d(10, 64, kernel_size=1, bias=False) # output is (batch, 64, P, N) tensor
-        self.bn1 = nn.BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        self.conv1 = nn.Conv2d(10, channel_size, kernel_size=1, bias=False) # output is (batch, 64, P, N) tensor
+        self.bn1 = nn.BatchNorm2d(channel_size, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
 
     def forward(self, lidar):
         """
@@ -347,6 +347,9 @@ class SSD(nn.Module):
             all_images_labels.append(image_labels)
             all_images_scores.append(image_scores)
 
+        # image_boxes:
+        #
+        #
         return all_images_boxes, all_images_labels, all_images_scores  # lists of length batch_size
 
 

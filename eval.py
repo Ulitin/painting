@@ -50,7 +50,7 @@ def evaluate(test_loader, train_dataset, model):
             if (w > l).all(): w, l, theta = l, w, 0
             train_dataset[i]
             cam_points = np.array([[xmin, ymin_cam, ymin, 1], [xmax, ymax_cam, ymax, 1]]).T
-            pm = train_dataset.projection_mats;
+            pm = train_dataset.projection_mats
             img_points = pm['P2'].dot(pm['R0_rect'].dot(cam_points)).T
             # img_points = cam_to_img.dot(cam_points).T
             f_name = file_nums_with_cars[i] + '.txt'
@@ -61,7 +61,7 @@ def evaluate(test_loader, train_dataset, model):
 
 device = torch.device("cpu")
 device = 'cpu'
-checkpoint = './pointpillars.pth'
+checkpoint = '/home/aulitin/workspace/jkl/painting/pointpillars.pth'
 checkpoint = torch.load(checkpoint, map_location='cpu')
 model = SSD(resnet_type=34, n_classes=2)
 model.load_state_dict(checkpoint)
@@ -70,7 +70,7 @@ root = '/home/aulitin/workspace/kitti_data/'
 results = './results'
 if not os.path.exists(results):
     os.makedirs(results)
-batch_size = 1
+batch_size = 2
 workers = 0
 bev_len = 500
 pillar_resolution=0.16
@@ -85,20 +85,19 @@ cam_to_img = np.array([[ 7.25995079e+02,  9.75088160e+00,  6.04164953e+02, 4.485
        [ 7.40252715e-03,  4.35161404e-03,  9.99963105e-01, 2.74588400e-03],
        [0, 0, 0, 1]])
 
-with open('file_nums.pkl', 'rb') as f:
+with open('/home/aulitin/workspace/jkl/painting/file_nums.pkl', 'rb') as f:
     file_nums_with_cars = pickle.load(f)
 
 model.eval()
 
-# test_dataset = KittiDataset(root=root, mode="testing", valid=False)
-# test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False,
-                                        #   collate_fn=test_dataset.collate_fn_eval, num_workers=workers)
+test_dataset = KittiDataset(root=root, mode="testing", valid=False)
+test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False,
+                                          collate_fn=test_dataset.collate_fn_eval, num_workers=workers)
 
-train_dataset = KittiDataset(root=root, mode="training", valid=False)
-train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=False,
-                                          collate_fn=train_dataset.collate_fn, num_workers=workers)
+evaluate(test_loader, test_dataset,  model)
 
+# train_dataset = KittiDataset(root=root, mode="training", valid=False)
+# train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=False,
+#                                           collate_fn=train_dataset.collate_fn, num_workers=workers)
 
-
-# evaluate(test_loader, model)
-evaluate(train_loader, train_dataset,  model)
+# evaluate(train_loader, train_dataset,  model)

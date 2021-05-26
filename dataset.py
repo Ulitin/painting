@@ -20,7 +20,7 @@ class KittiDataset(torch.utils.data.Dataset):
             raise ValueError('mode must be "training" or "testing".')
         if valid == True and self.mode != 'training':
             raise ValueError('mode must be set to "training" if valid is set to True.')
-        with open('file_nums.pkl', 'rb') as f:
+        with open('/home/aulitin/workspace/jkl/painting/file_nums.pkl', 'rb') as f:
             self.file_nums_with_cars = pickle.load(f)
 
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -31,6 +31,7 @@ class KittiDataset(torch.utils.data.Dataset):
         for p in deeplab101.backbone.parameters():
             p.requires_grad = False
         deeplab101.load_state_dict(torch.load('/home/aulitin/Downloads/deeplab_20epochs.pth', map_location='cpu'))
+        # deeplab101.load_state_dict(torch.load('/home/aulitin/Downloads/best_deeplabv3plus_resnet101_voc_os16.pth.pth', map_location='cpu'))
         # deeplab101.load_state_dict(torch.load('./deeplab_20epochs.pth'))
         deeplab101 = deeplab101.to(self.device)
         deeplab101.eval()
@@ -53,15 +54,15 @@ class KittiDataset(torch.utils.data.Dataset):
                 self.labels = [s + '.txt' for s in self.file_nums_with_cars][train_limit:]
 
         else: # testset
-            self.imgs = list(sorted(os.listdir(os.path.join(root, mode, "image_2"))))
-            self.lidar = list(sorted(os.listdir(os.path.join(root, mode, "velodyne"))))
-            self.calib = list(sorted(os.listdir(os.path.join(root, mode, "calib"))))
+            self.imgs = list(sorted(os.listdir(os.path.join(root, "image_2"))))
+            self.lidar = list(sorted(os.listdir(os.path.join(root, "velodyne"))))
+            self.calib = list(sorted(os.listdir(os.path.join(root, "calib"))))
 
     def __getitem__(self, idx):
-
-        img_path = os.path.join(self.root, self.mode, "image_2", self.imgs[idx])
-        lidar_path = os.path.join(self.root, self.mode, "velodyne", self.lidar[idx])
-        calib_path = os.path.join(self.root, self.mode, "calib", self.calib[idx])
+        idx += 1
+        img_path = os.path.join(self.root, "image_2", self.imgs[idx])
+        lidar_path = os.path.join(self.root,"velodyne", self.lidar[idx])
+        calib_path = os.path.join(self.root,"calib", self.calib[idx])
 
         self.projection_mats = {}
         with open(calib_path) as f:
@@ -91,7 +92,7 @@ class KittiDataset(torch.utils.data.Dataset):
                 labels = []
                 lines = f.readlines()
                 for l in lines:
-                    label_id = convert_to_label(l.split()[0])
+                    label_id = self.convert_to_label(l.split()[0])
                     bbox_2d = np.array(l.split()[4:8], dtype=np.float32)
                     dims_3d = np.array(l.split()[8:11], dtype=np.float32)
                     car_center_3d = np.array(l.split()[11:14], dtype=np.float32)
@@ -176,7 +177,7 @@ class KittiDataset(torch.utils.data.Dataset):
         mask = self.deeplab101(tensor_img)
         mask = mask['out'] #ignore auxillary output
         # _, preds = torch.max(mask, 1)
-        output_predictions = mask[0].argmax(0)
+        _, output_predictions = torch.max(mask[0], 0) #mask[0].argmax(0)
         # create a color pallette, selecting a color for each class
         palette = torch.tensor([2 ** 25 - 1, 2 ** 15 - 1, 2 ** 21 - 1])
         colors = torch.as_tensor([i for i in range(21)])[:, None] * palette
@@ -190,7 +191,6 @@ class KittiDataset(torch.utils.data.Dataset):
         import matplotlib.pyplot as plt
         plt.imshow(r)
         plt.show()
-        jj = 10
 
     def augment_lidar_class_scores(self, class_scores, lidar_cam_coords, projection_mats):
         """
